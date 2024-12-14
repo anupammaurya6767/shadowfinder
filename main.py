@@ -1,9 +1,9 @@
-# main.py
 import asyncio
 import signal
 import sys
 import os
 from getpass import getpass
+from aiohttp import web
 from bot.shadowfinder import ShadowFinder
 from bot.config.config import Config
 from loguru import logger
@@ -18,14 +18,14 @@ if platform.system() != 'Windows':
     uvloop.install()
 
 def get_peer_type_new(peer_id: int) -> str:
-            peer_id_str = str(peer_id)
-            if not peer_id_str.startswith("-"):
-                return "user"
-            elif peer_id_str.startswith("-100"):
-                return "channel"
-            else:
-                return "chat"
-            
+    peer_id_str = str(peer_id)
+    if not peer_id_str.startswith("-"):
+        return "user"
+    elif peer_id_str.startswith("-100"):
+        return "channel"
+    else:
+        return "chat"
+
 pyrogram.utils.MIN_CHANNEL_ID = -1002281400624
 pyrogram.utils.get_peer_type = get_peer_type_new
 
@@ -35,13 +35,15 @@ class BotRunner:
         self._shutdown_trigger: asyncio.Event = asyncio.Event()
         self._running_tasks: Set[asyncio.Task] = set()
         self._setup_logging()
-        
+        self._web_app = None
+        self._web_runner = None
+
     async def ensure_session(self):
         """Ensure user session exists"""
         if not Config.USER_SESSION_STRING:
             logger.info("No user session found. Starting session generator...")
             return
-    
+
     def _setup_logging(self) -> None:
         """Configure logging settings"""
         logger.remove()  # Remove default handler
@@ -89,6 +91,10 @@ class BotRunner:
             except Exception as e:
                 logger.error(f"Error stopping bot: {e}")
 
+        # Stop web server
+        if self._web_runner:
+            await self._web_runner.cleanup()
+
         # Cancel running tasks
         tasks = [t for t in self._running_tasks if not t.done()]
         if tasks:
@@ -101,27 +107,44 @@ class BotRunner:
         loop = asyncio.get_running_loop()
         loop.stop()
 
+    async def _start_web_server(self) -> None:
+        """Start the HTTP server for health checks"""
+        async def handle_health_check(request):
+            return web.Response(text="OK")
+
+        self._web_app = web.Application()
+        self._web_app.router.add_get("/health", handle_health_check)
+
+        self._web_runner = web.AppRunner(self._web_app)
+        await self._web_runner.setup()
+        site = web.TCPSite(self._web_runner, "0.0.0.0", 8000)
+        await site.start()
+        logger.info("HTTP server for health checks started on port 8000")
+
     async def start(self) -> None:
-        """Start the bot"""
+        """Start the bot and the HTTP server"""
         try:
             # Check and generate session if needed
             await self.ensure_session()
-            
+
             # Initialize bot
             self.bot = ShadowFinder()
-            
+
             # Setup signal handlers
             self._handle_signals()
-            
+
+            # Start the HTTP server
+            await self._start_web_server()
+
             # Print startup banner
             self._print_banner()
-            
+
             # Start the bot
             await self.bot.start()
-            
+
             # Wait for shutdown signal
             await self._shutdown_trigger.wait()
-            
+
         except Exception as e:
             logger.error(f"Fatal error: {e}")
             await self._shutdown()
@@ -152,7 +175,7 @@ class BotRunner:
 
             # Run the bot
             loop.run_until_complete(self.start())
-            
+
         except KeyboardInterrupt:
             logger.warning("Received keyboard interrupt")
         except Exception as e:
@@ -177,7 +200,7 @@ def main() -> None:
         # Run the bot
         runner = BotRunner()
         runner.run()
-        
+
     except KeyboardInterrupt:
         print("\nBot stopped by user!")
     except Exception as e:
