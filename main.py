@@ -34,9 +34,8 @@ class BotRunner:
         self.bot: Optional[ShadowFinder] = None
         self._shutdown_trigger: asyncio.Event = asyncio.Event()
         self._running_tasks: Set[asyncio.Task] = set()
+        self._http_server_task: Optional[asyncio.Task] = None
         self._setup_logging()
-        self._web_app = None
-        self._web_runner = None
 
     async def ensure_session(self):
         """Ensure user session exists"""
@@ -78,7 +77,7 @@ class BotRunner:
         return task
 
     async def _shutdown(self, signal: Optional[signal.Signals] = None) -> None:
-        """Handle graceful shutdown"""
+        """Handle graceful shutdown."""
         if signal:
             logger.info(f"Received signal {signal.name}, initiating shutdown...")
 
@@ -91,9 +90,8 @@ class BotRunner:
             except Exception as e:
                 logger.error(f"Error stopping bot: {e}")
 
-        # Stop web server
-        if self._web_runner:
-            await self._web_runner.cleanup()
+        # Stop the HTTP server
+        await self.stop_http_server()
 
         # Cancel running tasks
         tasks = [t for t in self._running_tasks if not t.done()]
@@ -107,34 +105,43 @@ class BotRunner:
         loop = asyncio.get_running_loop()
         loop.stop()
 
-    async def _start_web_server(self) -> None:
-        """Start the HTTP server for health checks"""
-        async def handle_health_check(request):
+    async def start_http_server(self) -> None:
+        """Start a lightweight HTTP server for health checks."""
+        async def health_check(request):
             return web.Response(text="OK")
 
-        self._web_app = web.Application()
-        self._web_app.router.add_get("/health", handle_health_check)
-
-        self._web_runner = web.AppRunner(self._web_app)
-        await self._web_runner.setup()
-        site = web.TCPSite(self._web_runner, "0.0.0.0", 8000)
+        app = web.Application()
+        app.router.add_get("/", health_check)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", 8000)
         await site.start()
-        logger.info("HTTP server for health checks started on port 8000")
+        logger.info("HTTP server for health checks started on port 8000.")
+
+    async def stop_http_server(self) -> None:
+        """Stop the HTTP server."""
+        if self._http_server_task:
+            self._http_server_task.cancel()
+            try:
+                await self._http_server_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("HTTP server stopped.")
 
     async def start(self) -> None:
-        """Start the bot and the HTTP server"""
+        """Start the bot and HTTP server."""
         try:
             # Check and generate session if needed
             await self.ensure_session()
+
+            # Start HTTP server
+            self._http_server_task = self._create_task(self.start_http_server())
 
             # Initialize bot
             self.bot = ShadowFinder()
 
             # Setup signal handlers
             self._handle_signals()
-
-            # Start the HTTP server
-            await self._start_web_server()
 
             # Print startup banner
             self._print_banner()
