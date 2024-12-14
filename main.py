@@ -17,6 +17,18 @@ from typing import Optional, Set
 if platform.system() != 'Windows':
     uvloop.install()
 
+def get_peer_type_new(peer_id: int) -> str:
+            peer_id_str = str(peer_id)
+            if not peer_id_str.startswith("-"):
+                return "user"
+            elif peer_id_str.startswith("-100"):
+                return "channel"
+            else:
+                return "chat"
+            
+pyrogram.utils.MIN_CHANNEL_ID = -1002281400624
+pyrogram.utils.get_peer_type = get_peer_type_new
+
 class BotRunner:
     def __init__(self):
         self.bot: Optional[ShadowFinder] = None
