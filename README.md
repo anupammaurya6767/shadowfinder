@@ -1,8 +1,5 @@
 # 🕵️ ShadowFinder Bot
 
-[![Koyeb Deploy](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy)
-[![Replit Run](https://replit.com/badge/github/anupammaurya6767/shadowfinder)](https://replit.com/@tanjirouji7/Telegram-Session-Generator?v=1)
-
 ## 🌟 Overview
 ShadowFinder is a powerful Telegram bot designed for efficient search and content discovery, inspired by the epic line "I alone level up..." from Solo Leveling.
 
