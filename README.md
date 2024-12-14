@@ -80,7 +80,7 @@ Use the [Telegram Session Generator](https://replit.com/@tanjirouji7/Telegram-Se
 
 ## 🆘 Support
 - �Issues: [GitHub Issues](https://github.com/yourusername/shadowfinder/issues)
-- 💬 Telegram Support: [@YourSupportGroup](https://t.me/bots_arena_support)
+- 💬 Telegram Support: [@SupportGroup](https://t.me/bots_arena_support)
 
 ## 🌈 Credits
 - 🔥 Inspired by "Solo Leveling"
