@@ -1,5 +1,4 @@
-# bot/handlers/inline.py
-from typing import Any
+from typing import Any, List, Dict, Optional
 from pyrogram import Client
 from pyrogram.types import (
     InlineQuery, 
@@ -10,19 +9,20 @@ from pyrogram.types import (
 )
 from pyrogram.enums import ParseMode
 from bot.database.models import User
-from ..helpers.utils import search_files, check_user_in_channel
+from ..helpers.utils import check_user_in_channel
 from ..templates.messages import Messages
 from ..config.config import Config
 from ..database import FileCache
 from loguru import logger
 import hashlib
 import base64
+
 def create_short_file_id(file_id: str) -> str:
     """Create a short identifier for a file ID"""
-    # Create MD5 hash of file_id and take first 8 characters
     return base64.urlsafe_b64encode(
         hashlib.md5(file_id.encode()).digest()[:6]
     ).decode().rstrip('=')
+
 def create_min_length_result() -> InlineQueryResultArticle:
     """Create result for minimum length requirement"""
     return InlineQueryResultArticle(
@@ -40,6 +40,7 @@ def create_min_length_result() -> InlineQueryResultArticle:
             )
         ]])
     )
+
 def create_unauthorized_result() -> InlineQueryResultArticle:
     """Create result for unauthorized users"""
     return InlineQueryResultArticle(
@@ -51,33 +52,37 @@ def create_unauthorized_result() -> InlineQueryResultArticle:
         description="This power can only be used in authorized guilds",
         thumb_url=Config.UNAUTHORIZED_THUMB_URL if hasattr(Config, 'UNAUTHORIZED_THUMB_URL') else None
     )
+
 async def create_force_sub_result(client: Client) -> InlineQueryResultArticle:
     """Create result for force subscribe requirement"""
     if not Config.FORCE_SUB_CHANNEL:
         return create_unauthorized_result()
+    
     try:
-        # Get channel info
         channel = await client.get_chat(Config.FORCE_SUB_CHANNEL)
         invite_link = None
         
-        # Try to get or create invite link
         if channel.username:
             invite_link = f"https://t.me/{channel.username}"
         else:
             try:
-                chat_member = await client.get_chat_member(Config.FORCE_SUB_CHANNEL, (await client.get_me()).id)
+                chat_member = await client.get_chat_member(
+                    Config.FORCE_SUB_CHANNEL,
+                    (await client.get_me()).id
+                )
                 if chat_member.privileges and chat_member.privileges.can_invite_users:
                     invite_link = await client.create_chat_invite_link(Config.FORCE_SUB_CHANNEL)
                     invite_link = invite_link.invite_link
             except Exception as e:
                 logger.error(f"Error creating invite link: {e}")
-        # If we couldn't get an invite link, use a basic channel link
+
         if not invite_link:
             if str(Config.FORCE_SUB_CHANNEL).startswith('-100'):
                 clean_id = str(Config.FORCE_SUB_CHANNEL)[4:]
                 invite_link = f"https://t.me/c/{clean_id}/1"
             else:
                 invite_link = f"https://t.me/+{abs(Config.FORCE_SUB_CHANNEL)}"
+
         return InlineQueryResultArticle(
             title="⚠️ Join Required",
             input_message_content=InputTextMessageContent(
@@ -96,12 +101,120 @@ async def create_force_sub_result(client: Client) -> InlineQueryResultArticle:
     except Exception as e:
         logger.error(f"Error creating force sub result: {e}")
         return create_unauthorized_result()
+
+class FileSearchManager:
+    def __init__(self, client: Client, db=None):
+        self.client = client
+        self.db = db
+
+    async def search_all_channels(self, query: str) -> List[Dict]:
+        """Search for files across all configured channels"""
+        all_results = []
+        search_channels = []
+
+        # Get search channels from config
+        if hasattr(Config, 'SEARCH_CHANNELS'):
+            if isinstance(Config.SEARCH_CHANNELS, (list, tuple)):
+                search_channels.extend([int(ch) for ch in Config.SEARCH_CHANNELS])
+            elif Config.SEARCH_CHANNELS:
+                try:
+                    search_channels.append(int(Config.SEARCH_CHANNELS))
+                except (ValueError, TypeError):
+                    logger.error(f"Invalid SEARCH_CHANNELS config: {Config.SEARCH_CHANNELS}")
+
+        # Add force sub channel if configured
+        if hasattr(Config, 'FORCE_SUB_CHANNEL') and Config.FORCE_SUB_CHANNEL:
+            try:
+                force_sub_channel = int(Config.FORCE_SUB_CHANNEL)
+                if force_sub_channel not in search_channels:
+                    search_channels.append(force_sub_channel)
+            except (ValueError, TypeError):
+                logger.error(f"Invalid FORCE_SUB_CHANNEL config: {Config.FORCE_SUB_CHANNEL}")
+
+        if not search_channels:
+            logger.error("No search channels configured")
+            return []
+
+        # Search each channel
+        for channel_id in search_channels:
+            try:
+                channel_results = await self._search_channel(channel_id, query)
+                all_results.extend(channel_results)
+            except Exception as e:
+                logger.error(f"Error searching channel {channel_id}: {e}")
+                continue
+
+        return all_results[:Config.MAX_RESULTS]
+
+    async def _search_channel(self, channel_id: int, query: str) -> List[Dict]:
+        """Search for files in a specific channel"""
+        results = []
+        try:
+            async for message in self.client.search_messages(
+                chat_id=channel_id,
+                query=query,
+                filter="media",
+                limit=20
+            ):
+                if message.media:
+                    file_info = await self._extract_file_info(message)
+                    if file_info:
+                        results.append(file_info)
+        except Exception as e:
+            logger.error(f"Error searching channel {channel_id}: {e}")
+        return results
+
+    async def _extract_file_info(self, message: Any) -> Optional[Dict]:
+        """Extract file information from a message"""
+        try:
+            media = None
+            file_type = None
+            file_name = None
+            file_size = 0
+
+            if message.document:
+                media = message.document
+                file_type = "document"
+            elif message.video:
+                media = message.video
+                file_type = "video"
+            elif message.audio:
+                media = message.audio
+                file_type = "audio"
+            elif message.photo:
+                media = message.photo
+                file_type = "photo"
+            elif message.animation:
+                media = message.animation
+                file_type = "animation"
+
+            if media:
+                file_id = getattr(media, 'file_id', None)
+                file_name = getattr(media, 'file_name', f'media_{file_type}_{message.id}')
+                file_size = getattr(media, 'file_size', 0)
+
+                if file_id:
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "file_size": file_size,
+                        "type": file_type,
+                        "message_id": message.id,
+                        "chat_id": message.chat.id
+                    }
+
+            return None
+        except Exception as e:
+            logger.error(f"Error extracting file info: {e}")
+            return None
+
 @Client.on_inline_query()
 async def handle_inline_query(client: Client, query: InlineQuery):
     """Handle inline queries"""
     try:
         logger.debug(f"Received inline query: '{query.query}' from user {query.from_user.id}")
-        # Check if database is initialized
+
+        # Check database initialization
         if not hasattr(client, 'db') or client.db is None:
             logger.error("Database not initialized")
             return await query.answer(
@@ -117,11 +230,12 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                 ],
                 cache_time=0
             )
-        # Get chat type using custom peer type logic
+
+        # Check chat authorization
         chat_id = getattr(query, 'chat', None)
         if chat_id:
             chat_id_str = str(chat_id)
-            if chat_id_str.startswith('-100'):  # Channel or Supergroup
+            if chat_id_str.startswith('-100'):
                 if chat_id not in Config.AUTHORIZED_GROUPS:
                     logger.debug(f"Chat {chat_id} not in authorized groups")
                     return await query.answer(
@@ -134,6 +248,7 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                     [create_unauthorized_result()],
                     cache_time=0
                 )
+
         # Check force subscribe
         if not await check_user_in_channel(client, query.from_user.id):
             logger.debug(f"User {query.from_user.id} not subscribed to force sub channel")
@@ -141,6 +256,7 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                 [await create_force_sub_result(client)],
                 cache_time=0
             )
+
         # Check query length
         search_text = query.query.strip()
         if len(search_text) < Config.MIN_SEARCH_LENGTH:
@@ -149,28 +265,26 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                 [create_min_length_result()],
                 cache_time=0
             )
+
         # Search files
         logger.debug(f"Searching for: {search_text}")
-        files = await search_files(client, search_text, db=client.db)
+        search_manager = FileSearchManager(client, db=client.db)
+        files = await search_manager.search_all_channels(search_text)
+        
         results = []
         file_cache = FileCache(client.db)
-        
+
         for file in files:
             try:
-                # Get cached info if available
                 cached_file = await file_cache.get_cached_file(file['file_id'])
                 access_count = cached_file.get('access_count', 0) if cached_file else 0
                 
-                # Create short identifier for callback data
                 short_id = create_short_file_id(file['file_id'])
-                
-                # Cache the mapping of short_id to file_id
                 await file_cache.cache_short_id_mapping(short_id, file['file_id'])
                 
                 size = f"{file['file_size'] / 1024 / 1024:.2f} MB"
                 popularity = "🔥" if access_count > 10 else ""
                 
-                # Create file type indicator
                 file_type = file.get('type', 'document')
                 type_emoji = {
                     'document': '📄',
@@ -194,22 +308,26 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                         ),
                         description=f"Size: {size} | Downloads: {access_count}",
                         thumb_url=Config.FILE_THUMB_URL if hasattr(Config, 'FILE_THUMB_URL') else None,
-                        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "📥 Extract Artifact 📥",
-                callback_data=f"dl_{short_id}"
-            )
-        ], [
-            InlineKeyboardButton(
-                "🤖 Start Bot",
-                url="https://t.me/Searchkrlobot"
-            )
-        ]])
-    )
+                        reply_markup=InlineKeyboardMarkup([
+                            [
+                                InlineKeyboardButton(
+                                    "📥 Extract Artifact 📥",
+                                    callback_data=f"dl_{short_id}"
+                                )
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    "🤖 Start Bot",
+                                    url="https://t.me/Searchkrlobot"
+                                )
+                            ]
+                        ])
+                    )
                 )
             except Exception as e:
                 logger.error(f"Error processing file result: {e}")
                 continue
+
         if not results:
             logger.debug("No results found")
             results.append(
@@ -223,18 +341,21 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                     thumb_url=Config.NO_RESULTS_THUMB_URL if hasattr(Config, 'NO_RESULTS_THUMB_URL') else None
                 )
             )
+
         # Update user's search count
         try:
             user_db = User(client.db)
             await user_db.update_user_stats(query.from_user.id, search=True)
         except Exception as e:
             logger.error(f"Error updating user stats: {e}")
+
         logger.debug(f"Returning {len(results)} results")
         await query.answer(
             results[:Config.MAX_RESULTS],
             cache_time=300,
             is_personal=True
         )
+
     except Exception as e:
         logger.error(f"Error in inline query: {e}")
         await query.answer(
