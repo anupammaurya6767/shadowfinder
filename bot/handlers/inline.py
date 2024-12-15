@@ -1,3 +1,5 @@
+import hashlib
+import base64
 from typing import Any
 from pyrogram import Client
 from pyrogram.types import (
@@ -15,8 +17,6 @@ from ..templates.messages import Messages
 from ..config.config import Config
 from ..database import FileCache
 from loguru import logger
-import hashlib
-import base64
 import asyncio
 
 def create_short_file_id(file_id: str) -> str:
@@ -122,9 +122,44 @@ async def retry_with_flood_control(func, *args, **kwargs):
         except Exception as e:
             raise
 
+async def handle_file_cache_error(
+    client: Client, 
+    file: dict, 
+    file_cache: FileCache, 
+    is_userbot: bool = False
+) -> dict:
+    """
+    Handle errors with file caching, attempt to recover or log appropriately
+    
+    Args:
+        client (Client): Pyrogram client
+        file (dict): File metadata dictionary
+        file_cache (FileCache): File cache database handler
+        is_userbot (bool, optional): Whether the query is from a userbot. Defaults to False.
+    
+    Returns:
+        dict: Fallback file metadata with default access count
+    """
+    logger.warning(f"Cache error for file: {file['file_id']}")
+    
+    # Default fallback values
+    default_cache = {
+        'access_count': 0,
+        'file_id': file['file_id']
+    }
+    
+    try:
+        # Attempt to create a cache entry if it doesn't exist
+        await file_cache.cache_file(file)
+        logger.info(f"Created new cache entry for file: {file['file_id']}")
+        return default_cache
+    except Exception as cache_error:
+        logger.error(f"Failed to handle cache for file: {cache_error}")
+        return default_cache
+
 @Client.on_inline_query()
 async def handle_inline_query(client: Client, query: InlineQuery):
-    """Handle inline queries with support for userbot clients"""
+    """Handle inline queries with support for userbot clients and robust error handling"""
     try:
         logger.debug(f"Received inline query: '{query.query}' from user {query.from_user.id}")
         
@@ -191,8 +226,14 @@ async def handle_inline_query(client: Client, query: InlineQuery):
             # Process files
             for file in files:
                 try:
+                    # Enhanced cache handling
                     cached_file = await file_cache.get_cached_file(file['file_id'])
-                    access_count = cached_file.get('access_count', 0) if cached_file else 0
+                    if not cached_file:
+                        cached_file = await handle_file_cache_error(
+                            client, file, file_cache, is_userbot
+                        )
+                    
+                    access_count = cached_file.get('access_count', 0)
                     
                     # Use more compact short IDs for userbot
                     if is_userbot:
