@@ -8,7 +8,7 @@ from pyrogram.types import (
     InlineKeyboardButton
 )
 from pyrogram.enums import ParseMode
-from pyrogram.errors import QueryIdInvalid
+from pyrogram.errors import QueryIdInvalid, FloodWait
 from bot.database.models import User
 from ..helpers.utils import search_files, check_user_in_channel
 from ..templates.messages import Messages
@@ -104,13 +104,33 @@ MAX_RETRIES = 5
 INITIAL_RETRY_DELAY = 1.0  
 DB_OPERATION_TIMEOUT = 15.0  
 
+async def retry_with_flood_control(func, *args, **kwargs):
+    """Helper function to handle flood control and retries"""
+    total_wait_time = 0
+    max_total_wait = 60  # Maximum total wait time in seconds
+    
+    while total_wait_time < max_total_wait:
+        try:
+            return await func(*args, **kwargs)
+        except FloodWait as e:
+            wait_time = e.value * FLOOD_WAIT_MULTIPLIER
+            if total_wait_time + wait_time > max_total_wait:
+                raise
+            logger.warning(f"FloodWait detected, waiting for {wait_time} seconds")
+            await asyncio.sleep(wait_time)
+            total_wait_time += wait_time
+        except Exception as e:
+            raise
+
 @Client.on_inline_query()
 async def handle_inline_query(client: Client, query: InlineQuery):
-    """Handle inline queries with extended timeouts for slower servers"""
+    """Handle inline queries with support for userbot clients"""
     try:
         logger.debug(f"Received inline query: '{query.query}' from user {query.from_user.id}")
         
-        # Initialize default error result
+        is_userbot = not getattr(client, 'bot_token', None)
+        logger.debug(f"Client type: {'Userbot' if is_userbot else 'Bot'}")
+        
         error_result = InlineQueryResultArticle(
             title="❌ Error occurred",
             input_message_content=InputTextMessageContent(
@@ -120,108 +140,117 @@ async def handle_inline_query(client: Client, query: InlineQuery):
             description="Please try again later"
         )
 
-        # Add timeout for the entire operation
         async def process_query():
-            # Database check with timeout
-            try:
-                async with asyncio.timeout(DB_OPERATION_TIMEOUT):
-                    if not hasattr(client, 'db') or client.db is None:
-                        logger.error("Database not initialized")
-                        return [InlineQueryResultArticle(
-                            title="❌ Service Unavailable",
-                            input_message_content=InputTextMessageContent(
-                                "Bot is initializing, please try again in a few moments.",
-                                parse_mode=ParseMode.MARKDOWN
-                            ),
-                            description="Database connection not ready"
-                        )]
-            except asyncio.TimeoutError:
-                logger.error("Database check timed out")
-                raise
+            # Database check
+            if not hasattr(client, 'db') or client.db is None:
+                logger.error("Database not initialized")
+                return [InlineQueryResultArticle(
+                    title="❌ Service Unavailable",
+                    input_message_content=InputTextMessageContent(
+                        "Bot is initializing, please try again in a few moments.",
+                        parse_mode=ParseMode.MARKDOWN
+                    ),
+                    description="Database connection not ready"
+                )]
 
-            # Authorization checks
-            chat_id = getattr(query, 'chat', None)
-            if chat_id:
-                chat_id_str = str(chat_id)
-                if chat_id_str.startswith('-100') and chat_id not in Config.AUTHORIZED_GROUPS:
-                    return [create_unauthorized_result()]
-                elif not chat_id_str.startswith('-100'):
-                    return [create_unauthorized_result()]
+            # Skip auth checks for userbot
+            if not is_userbot:
+                # Regular bot authorization checks here
+                chat_id = getattr(query, 'chat', None)
+                if chat_id:
+                    chat_id_str = str(chat_id)
+                    if chat_id_str.startswith('-100') and chat_id not in Config.AUTHORIZED_GROUPS:
+                        return [create_unauthorized_result()]
+                    elif not chat_id_str.startswith('-100'):
+                        return [create_unauthorized_result()]
 
-            # Force subscribe check with timeout
-            try:
-                async with asyncio.timeout(10.0):
-                    if not await check_user_in_channel(client, query.from_user.id):
-                        return [await create_force_sub_result(client)]
-            except asyncio.TimeoutError:
-                logger.error("Force subscribe check timed out")
-                raise
+                # Force subscribe check only for regular bot
+                if not await check_user_in_channel(client, query.from_user.id):
+                    return [await create_force_sub_result(client)]
 
             # Query length check
             search_text = query.query.strip()
             if len(search_text) < Config.MIN_SEARCH_LENGTH:
                 return [create_min_length_result()]
 
-            # Search files with timeout
+            # Search files with flood control
             try:
-                async with asyncio.timeout(15.0):
-                    files = await search_files(client, search_text, db=client.db)
-            except asyncio.TimeoutError:
-                logger.error("File search timed out")
+                files = await retry_with_flood_control(
+                    search_files,
+                    client,
+                    search_text,
+                    db=client.db
+                )
+            except Exception as e:
+                logger.error(f"File search failed: {e}")
                 raise
 
             results = []
             file_cache = FileCache(client.db)
 
-            # Process files with a separate timeout
-            try:
-                async with asyncio.timeout(10.0):
-                    for file in files:
-                        try:
-                            cached_file = await file_cache.get_cached_file(file['file_id'])
-                            access_count = cached_file.get('access_count', 0) if cached_file else 0
-                            short_id = create_short_file_id(file['file_id'])
-                            await file_cache.cache_short_id_mapping(short_id, file['file_id'])
-                            
-                            size = f"{file['file_size'] / 1024 / 1024:.2f} MB"
-                            popularity = "🔥" if access_count > 10 else ""
-                            
-                            file_type = file.get('type', 'document')
-                            type_emoji = {
-                                'document': '📄', 'video': '🎥', 'audio': '🎵',
-                                'photo': '🖼️', 'voice': '🎤', 'animation': '🎞️'
-                            }.get(file_type, '📄')
-                            
-                            results.append(InlineQueryResultArticle(
-                                title=f"{popularity}{type_emoji} {file['file_name']}",
-                                input_message_content=InputTextMessageContent(
-                                    f"🗡️ **File Name**: {file['file_name']}\n"
-                                    f"💠 **Size**: {size}\n"
-                                    f"📥 **Downloads**: {access_count}\n"
-                                    f"📁 **Type**: {file_type.title()}\n\n"
-                                    f"⚡️ *Summoning your file from the shadow realm...*",
-                                    parse_mode=ParseMode.MARKDOWN
-                                ),
-                                description=f"Size: {size} | Downloads: {access_count}",
-                                thumb_url=Config.FILE_THUMB_URL if hasattr(Config, 'FILE_THUMB_URL') else None,
-                                reply_markup=InlineKeyboardMarkup([[
-                                    InlineKeyboardButton(
-                                        "📥 Extract Artifact 📥",
-                                        callback_data=f"dl_{short_id}"
-                                    )
-                                ], [
-                                    InlineKeyboardButton(
-                                        "🤖 Start Bot",
-                                        url="https://t.me/Searchkrlobot"
-                                    )
-                                ]])
-                            ))
-                        except Exception as e:
-                            logger.error(f"Error processing file result: {e}")
-                            continue
-            except asyncio.TimeoutError:
-                logger.error("File processing timed out")
-                raise
+            # Process files
+            for file in files:
+                try:
+                    cached_file = await file_cache.get_cached_file(file['file_id'])
+                    access_count = cached_file.get('access_count', 0) if cached_file else 0
+                    
+                    # Use more compact short IDs for userbot
+                    if is_userbot:
+                        short_id = base64.urlsafe_b64encode(
+                            hashlib.md5(file['file_id'].encode()).digest()[:4]
+                        ).decode().rstrip('=')
+                    else:
+                        short_id = create_short_file_id(file['file_id'])
+                    
+                    await file_cache.cache_short_id_mapping(short_id, file['file_id'])
+                    
+                    size = f"{file['file_size'] / 1024 / 1024:.2f} MB"
+                    popularity = "🔥" if access_count > 10 else ""
+                    
+                    file_type = file.get('type', 'document')
+                    type_emoji = {
+                        'document': '📄', 'video': '🎥', 'audio': '🎵',
+                        'photo': '🖼️', 'voice': '🎤', 'animation': '🎞️'
+                    }.get(file_type, '📄')
+                    
+                    # Simplified markup for userbot queries
+                    if is_userbot:
+                        markup = InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "📥 Download",
+                                callback_data=f"dl_{short_id}"
+                            )
+                        ]])
+                    else:
+                        markup = InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "📥 Extract Artifact 📥",
+                                callback_data=f"dl_{short_id}"
+                            )
+                        ], [
+                            InlineKeyboardButton(
+                                "🤖 Start Bot",
+                                url="https://t.me/Searchkrlobot"
+                            )
+                        ]])
+
+                    results.append(InlineQueryResultArticle(
+                        title=f"{popularity}{type_emoji} {file['file_name']}",
+                        input_message_content=InputTextMessageContent(
+                            f"🗡️ **File Name**: {file['file_name']}\n"
+                            f"💠 **Size**: {size}\n"
+                            f"📥 **Downloads**: {access_count}\n"
+                            f"📁 **Type**: {file_type.title()}"
+                            + ("" if is_userbot else "\n\n⚡️ *Summoning your file from the shadow realm...*"),
+                            parse_mode=ParseMode.MARKDOWN
+                        ),
+                        description=f"Size: {size} | Downloads: {access_count}",
+                        thumb_url=Config.FILE_THUMB_URL if hasattr(Config, 'FILE_THUMB_URL') else None,
+                        reply_markup=markup
+                    ))
+                except Exception as e:
+                    logger.error(f"Error processing file result: {e}")
+                    continue
 
             if not results:
                 results.append(InlineQueryResultArticle(
@@ -234,40 +263,47 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                     thumb_url=Config.NO_RESULTS_THUMB_URL if hasattr(Config, 'NO_RESULTS_THUMB_URL') else None
                 ))
 
-            # Update user stats with timeout
-            try:
-                async with asyncio.timeout(5.0):
-                    try:
-                        user_db = User(client.db)
-                        await user_db.update_user_stats(query.from_user.id, search=True)
-                    except Exception as e:
-                        logger.error(f"Error updating user stats: {e}")
-            except asyncio.TimeoutError:
-                logger.warning("User stats update timed out - continuing without update")
+            # Update user stats only for regular bot
+            if not is_userbot:
+                try:
+                    user_db = User(client.db)
+                    await user_db.update_user_stats(query.from_user.id, search=True)
+                except Exception as e:
+                    logger.error(f"Error updating user stats: {e}")
 
             return results[:Config.MAX_RESULTS]
 
-        # Execute with increased timeout
+        # Execute with appropriate timeout
+        timeout = USERBOT_QUERY_TIMEOUT if is_userbot else 25.0
         try:
-            results = await asyncio.wait_for(process_query(), timeout=QUERY_TIMEOUT)
+            results = await asyncio.wait_for(process_query(), timeout=timeout)
             
-            # Implement retry logic for answer_inline_query with increased retries and delay
+            # Enhanced retry logic for userbot
             retry_delay = INITIAL_RETRY_DELAY
             
             for attempt in range(MAX_RETRIES):
                 try:
-                    await query.answer(
-                        results,
-                        cache_time=300,
-                        is_personal=True
-                    )
+                    if is_userbot:
+                        # Use flood control for userbot queries
+                        await retry_with_flood_control(
+                            query.answer,
+                            results,
+                            cache_time=300 if not is_userbot else 0,  # No cache for userbot
+                            is_personal=True
+                        )
+                    else:
+                        await query.answer(
+                            results,
+                            cache_time=300,
+                            is_personal=True
+                        )
                     break
                 except QueryIdInvalid:
                     if attempt == MAX_RETRIES - 1:
                         raise
                     logger.warning(f"Query answer attempt {attempt + 1} failed, retrying in {retry_delay:.1f}s")
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 1.5  # Gentler exponential backoff
+                    retry_delay *= 1.5
 
         except asyncio.TimeoutError:
             logger.error("Query processing timed out")
@@ -275,8 +311,8 @@ async def handle_inline_query(client: Client, query: InlineQuery):
             
     except QueryIdInvalid:
         logger.error("Final QueryIdInvalid error - query expired")
-        # Don't try to answer here as it will fail
-        pass
+    except FloodWait as e:
+        logger.error(f"FloodWait error: {e}")
     except Exception as e:
         logger.error(f"Error in inline query: {e}")
         try:
