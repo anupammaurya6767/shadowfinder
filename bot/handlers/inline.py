@@ -1,4 +1,3 @@
-# bot/handlers/inline.py
 from typing import Any
 from pyrogram import Client
 from pyrogram.types import (
@@ -9,6 +8,7 @@ from pyrogram.types import (
     InlineKeyboardButton
 )
 from pyrogram.enums import ParseMode
+from pyrogram.errors import QueryIdInvalid
 from bot.database.models import User
 from ..helpers.utils import search_files, check_user_in_channel
 from ..templates.messages import Messages
@@ -17,6 +17,8 @@ from ..database import FileCache
 from loguru import logger
 import hashlib
 import base64
+import asyncio
+
 def create_short_file_id(file_id: str) -> str:
     """Create a short identifier for a file ID"""
     # Create MD5 hash of file_id and take first 8 characters
