@@ -35,7 +35,7 @@ pip install -r requirements.txt
 ```
 
 ### 🔑 Session String Generation
-[![Run on Repl.it](https://replit.com/@tanjirouji7/Telegram-Session-Generator)](https://replit.com/@tanjirouji7/Telegram-Session-Generator?v=1)
+[![Run on Repl.it](https://replit.com/badge/github/yourusername/session-generator)](https://replit.com/@tanjirouji7/Telegram-Session-Generator?v=1)
 
 Use the [Telegram Session Generator](https://replit.com/@tanjirouji7/Telegram-Session-Generator?v=1) to create your session string:
 
