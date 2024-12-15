@@ -49,6 +49,15 @@ class ShadowFinder(Client):
             sys.exit(1)
 
         name = self.__class__.__name__.lower()
+
+        session_file = f"{name}.session"
+        if os.path.exists(session_file):
+            try:
+                os.remove(session_file)
+                logger.info(f"Removed existing session file: {session_file}")
+            except Exception as e:
+                logger.error(f"Failed to remove session file: {e}")
+
         super().__init__(
             name=name,
             api_id=Config.API_ID,
@@ -56,7 +65,8 @@ class ShadowFinder(Client):
             bot_token=Config.BOT_TOKEN,
             plugins=dict(root="bot/handlers"),
             workers=Config.WORKERS,
-            max_concurrent_transmissions=Config.MAX_CONCURRENT_TRANSMISSIONS
+            max_concurrent_transmissions=Config.MAX_CONCURRENT_TRANSMISSIONS,
+            in_memory=True
         )
         
         # Initialize attributes
@@ -83,6 +93,41 @@ class ShadowFinder(Client):
         pyrogram.utils.get_peer_type = get_peer_type_new
         self.register_handlers()
 
+    async def clear_existing_sessions(self):
+        """Clear any existing session files"""
+        session_patterns = [
+            f"{self.__class__.__name__.lower()}.session",
+            "search_user_bot.session"
+        ]
+        for pattern in session_patterns:
+            if os.path.exists(pattern):
+                try:
+                    os.remove(pattern)
+                    logger.info(f"Removed existing session file: {pattern}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove session file {pattern}: {e}")
+
+    async def cleanup(self):
+        """Cleanup resources"""
+        try:
+            # Stop user bot if running
+            if self.user_bot:
+                await self.user_bot.stop()
+            
+            # Cancel all tasks
+            for task in self.tasks:
+                task.cancel()
+            
+            # Wait for tasks to complete
+            if self.tasks:
+                await asyncio.gather(*self.tasks, return_exceptions=True)
+            
+            # Clear session files
+            await self.clear_existing_sessions()
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+
     async def initialize_user_bot(self) -> None:
         """Initialize user bot client for searching"""
         if not Config.USER_SESSION_STRING:
@@ -90,21 +135,19 @@ class ShadowFinder(Client):
             return
 
         try:
+            # Create user bot with unique name and in-memory session
             self.user_bot = Client(
                 name="search_user_bot",
                 api_id=Config.API_ID,
                 api_hash=Config.API_HASH,
                 session_string=Config.USER_SESSION_STRING,
-                in_memory=True
+                in_memory=True,  # Use in-memory session
+                no_updates=True,  # Disable updates for user bot
             )
-
-            # Start user bot
+            
             await self.user_bot.start()
             user = await self.user_bot.get_me()
             logger.info(f"User bot started successfully as {user.first_name} (@{user.username})")
-
-            # Wait a moment for client to fully initialize
-            await asyncio.sleep(2)
 
             # Join search channels
             await self.join_search_channels()
@@ -368,6 +411,11 @@ class ShadowFinder(Client):
             
             # Initialize database
             await self.initialize_database()
+
+            try:
+                await self.clear_existing_sessions()
+            except Exception as e:
+                logger.warning(f"Failed to clear existing sessions: {e}")
             
             # Start bot client first
             await super().start()
@@ -397,7 +445,9 @@ class ShadowFinder(Client):
             logger.error(f"Database error: {str(e)}")
             sys.exit(1)
         except Exception as e:
-            logger.error(f"Failed to start bot: {str(e)}")
+            logger.error(f"Failed to start bot: {e}")
+            # Cleanup on error
+            await self.cleanup()
             sys.exit(1)
 
     async def stop(self, *args) -> None:
