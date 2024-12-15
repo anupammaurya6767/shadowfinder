@@ -79,11 +79,19 @@ async def check_user_in_channel(client: Client, user_id: int) -> bool:
 
 async def delete_message_later(message, delay: int = Config.DELETE_TIMEOUT):
     """Delete message after specified delay"""
-    await asyncio.sleep(delay)
     try:
+        # Wait for specified delay
+        await asyncio.sleep(delay)
+        
+        # Log deletion attempt
+        logger.debug(f"Attempting to delete message {message.id}")
+        
+        # Attempt to delete
         await message.delete()
-    except Exception:
-        pass
+        logger.info(f"Successfully deleted message {message.id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to delete message {message.id}: {str(e)}")
 
 async def process_media_message(message, query_lower: str) -> Optional[Dict[str, Any]]:
     """Process a message to extract media information"""

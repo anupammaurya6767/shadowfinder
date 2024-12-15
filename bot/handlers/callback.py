@@ -1279,6 +1279,9 @@ async def handle_callback(client: Client, callback: CallbackQuery):
             
             if sent_msg:
                 success = True
+                # Add deletion task for the sent file message
+                asyncio.create_task(delete_message_later(sent_msg)) 
+                
                 # Clean up temp message
                 try:
                     await temp_msg.delete()

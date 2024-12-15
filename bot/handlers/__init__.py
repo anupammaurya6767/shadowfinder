@@ -7,7 +7,7 @@ from .callback import handle_callback
 from .messages import handle_private_messages
 from .admin import (
     admin_panel, ban_user, unban_user, broadcast, 
-    user_stats, list_channels, check_id, check_config, add_authorized_channel, add_admin # Add check_config import
+    user_stats, list_channels, check_id, check_config, add_authorized_channel, add_admin, restart_bot # Add check_config import
 )
 from ..config.config import Config
 
@@ -26,6 +26,7 @@ def register_all_handlers(app: Client) -> None:
     app.add_handler(MessageHandler(broadcast, filters.command("broadcast") & filters.user(Config.OWNER_ID)))
     app.add_handler(MessageHandler(user_stats, filters.command("stats") & filters.private))
     app.add_handler(MessageHandler(list_channels, filters.command("channels") & filters.private))
+    app.add_handler(MessageHandler(restart_bot, filters.command("restart") & filters.private))
     app.add_handler(MessageHandler(check_id, filters.command("checkid") & filters.private))
     app.add_handler(MessageHandler(check_config, filters.command("checkconfig") & filters.private))  # Add checkconfig command
     app.add_handler(MessageHandler(add_authorized_channel, filters.command(["addchannel", "addgroup"])))

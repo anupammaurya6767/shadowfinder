@@ -1,4 +1,7 @@
 # bot/handlers/admin.py
+import json 
+import os
+import sys
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from ..database import Database, User, FileCache
@@ -422,6 +425,62 @@ async def broadcast(client: Client, message: Message):
             failed=failed
         )
     )
+
+@Client.on_message(filters.command(["restart"]) & filters.private)
+async def restart_bot(client: Client, message: Message):
+    """Restart the bot and reload configurations"""
+    if not is_admin_or_owner(message.from_user.id):
+        await message.reply_text(Messages.NOT_AUTHORIZED)
+        return
+
+    restart_msg = await message.reply_text("🔄 Restarting bot and reloading configurations...")
+
+    try:
+        # Log the restart
+        log_text = f"""
+🔄 **Bot Restart Initiated**
+👤 **Triggered By**: {message.from_user.mention}
+⏰ **Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        if Config.LOG_CHANNEL:
+            await client.send_message(Config.LOG_CHANNEL, log_text)
+
+        # Update the restart message
+        await restart_msg.edit_text(
+            "🔄 **Bot is restarting**\n\n"
+            "• Stopping current instance...\n"
+            "• Reloading configurations...\n"
+            "• Starting new instance...\n\n"
+            "⏳ Please wait 10-15 seconds..."
+        )
+
+        # Save restart message info
+        restart_info = {
+            "chat_id": message.chat.id,
+            "message_id": restart_msg.id,
+            "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Save restart info to file
+        with open("restart.json", "w") as f:
+            json.dump(restart_info, f)
+
+        # Trigger graceful shutdown with restart flag
+        os.environ['BOT_RESTARTING'] = '1'
+        
+        # Stop the client gracefully
+        await client.stop()
+        
+        # Execute the restart
+        if sys.platform.startswith('win'):
+            os.execv(sys.executable, ['python'] + sys.argv)
+        else:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    except Exception as e:
+        logger.error(f"Error during restart: {e}")
+        await restart_msg.edit_text(f"❌ **Error during restart**\n\n`{str(e)}`")
+
 
 @Client.on_message(filters.command(["channels"]) & filters.private)
 async def list_channels(client: Client, message: Message):

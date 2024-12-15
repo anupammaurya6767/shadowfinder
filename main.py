@@ -1,4 +1,6 @@
 import asyncio
+from datetime import datetime
+import json
 import signal
 import sys
 import os
@@ -56,6 +58,43 @@ class BotRunner:
         )
         logger.add(sys.stderr, level="INFO")
 
+    async def handle_restart_message(self) -> None:
+        """Handle sending confirmation message after restart"""
+        try:
+            if os.path.exists("restart.json"):
+                with open("restart.json", "r") as f:
+                    restart_info = json.load(f)
+                
+                # Remove the restart marker file
+                os.remove("restart.json")
+                
+                # Send confirmation message
+                chat_id = restart_info["chat_id"]
+                message_id = restart_info["message_id"]
+                restart_time = restart_info["time"]
+                
+                await self.bot.send_edited_message(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="✅ **Bot Restarted Successfully!**\n\n"
+                         "• Bot instance restarted\n"
+                         "• Configurations reloaded\n"
+                         "• All systems operational\n\n"
+                         f"⏱️ Restart initiated at: {restart_time}\n"
+                         f"⌛️ Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                
+                # Log the successful restart
+                if Config.LOG_CHANNEL:
+                    await self.bot.send_message(
+                        Config.LOG_CHANNEL,
+                        "✅ **Bot Restart Completed**\n"
+                        f"⏰ **Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    
+        except Exception as e:
+            logger.error(f"Error handling restart message: {e}")
+
     def _handle_signals(self) -> None:
         """Setup signal handlers"""
         signals = (signal.SIGTERM, signal.SIGINT)
@@ -75,6 +114,38 @@ class BotRunner:
         self._running_tasks.add(task)
         task.add_done_callback(self._running_tasks.discard)
         return task
+
+    async def start(self) -> None:
+        """Start the bot and HTTP server."""
+        try:
+            # Check and generate session if needed
+            await self.ensure_session()
+
+            # Start HTTP server
+            self._http_server_task = self._create_task(self.start_http_server())
+
+            # Initialize bot
+            self.bot = ShadowFinder()
+
+            # Setup signal handlers
+            self._handle_signals()
+
+            # Print startup banner
+            self._print_banner()
+
+            # Start the bot
+            await self.bot.start()
+            
+            # Handle restart message if this is a restart
+            await self.handle_restart_message()
+
+            # Wait for shutdown signal
+            await self._shutdown_trigger.wait()
+
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+            await self._shutdown()
+            sys.exit(1)
 
     async def _shutdown(self, signal: Optional[signal.Signals] = None) -> None:
         """Handle graceful shutdown."""
@@ -103,7 +174,12 @@ class BotRunner:
 
         # Stop the event loop
         loop = asyncio.get_running_loop()
-        loop.stop()
+        
+        # Check if this is a restart
+        if os.environ.get('BOT_RESTARTING'):
+            logger.info("Shutdown triggered by restart command")
+        else:
+            loop.stop()
 
     async def start_http_server(self) -> None:
         """Start a lightweight HTTP server for health checks."""
@@ -127,35 +203,6 @@ class BotRunner:
             except asyncio.CancelledError:
                 pass
             logger.info("HTTP server stopped.")
-
-    async def start(self) -> None:
-        """Start the bot and HTTP server."""
-        try:
-            # Check and generate session if needed
-            await self.ensure_session()
-
-            # Start HTTP server
-            self._http_server_task = self._create_task(self.start_http_server())
-
-            # Initialize bot
-            self.bot = ShadowFinder()
-
-            # Setup signal handlers
-            self._handle_signals()
-
-            # Print startup banner
-            self._print_banner()
-
-            # Start the bot
-            await self.bot.start()
-
-            # Wait for shutdown signal
-            await self._shutdown_trigger.wait()
-
-        except Exception as e:
-            logger.error(f"Fatal error: {e}")
-            await self._shutdown()
-            sys.exit(1)
 
     def _print_banner(self) -> None:
         """Print startup banner"""
