@@ -17,14 +17,12 @@ from ..database import FileCache
 from loguru import logger
 import hashlib
 import base64
-
 def create_short_file_id(file_id: str) -> str:
     """Create a short identifier for a file ID"""
     # Create MD5 hash of file_id and take first 8 characters
     return base64.urlsafe_b64encode(
         hashlib.md5(file_id.encode()).digest()[:6]
     ).decode().rstrip('=')
-
 def create_min_length_result() -> InlineQueryResultArticle:
     """Create result for minimum length requirement"""
     return InlineQueryResultArticle(
@@ -42,7 +40,6 @@ def create_min_length_result() -> InlineQueryResultArticle:
             )
         ]])
     )
-
 def create_unauthorized_result() -> InlineQueryResultArticle:
     """Create result for unauthorized users"""
     return InlineQueryResultArticle(
@@ -54,12 +51,10 @@ def create_unauthorized_result() -> InlineQueryResultArticle:
         description="This power can only be used in authorized guilds",
         thumb_url=Config.UNAUTHORIZED_THUMB_URL if hasattr(Config, 'UNAUTHORIZED_THUMB_URL') else None
     )
-
 async def create_force_sub_result(client: Client) -> InlineQueryResultArticle:
     """Create result for force subscribe requirement"""
     if not Config.FORCE_SUB_CHANNEL:
         return create_unauthorized_result()
-
     try:
         # Get channel info
         channel = await client.get_chat(Config.FORCE_SUB_CHANNEL)
@@ -76,7 +71,6 @@ async def create_force_sub_result(client: Client) -> InlineQueryResultArticle:
                     invite_link = invite_link.invite_link
             except Exception as e:
                 logger.error(f"Error creating invite link: {e}")
-
         # If we couldn't get an invite link, use a basic channel link
         if not invite_link:
             if str(Config.FORCE_SUB_CHANNEL).startswith('-100'):
@@ -84,7 +78,6 @@ async def create_force_sub_result(client: Client) -> InlineQueryResultArticle:
                 invite_link = f"https://t.me/c/{clean_id}/1"
             else:
                 invite_link = f"https://t.me/+{abs(Config.FORCE_SUB_CHANNEL)}"
-
         return InlineQueryResultArticle(
             title="⚠️ Join Required",
             input_message_content=InputTextMessageContent(
@@ -103,13 +96,11 @@ async def create_force_sub_result(client: Client) -> InlineQueryResultArticle:
     except Exception as e:
         logger.error(f"Error creating force sub result: {e}")
         return create_unauthorized_result()
-
 @Client.on_inline_query()
 async def handle_inline_query(client: Client, query: InlineQuery):
     """Handle inline queries"""
     try:
         logger.debug(f"Received inline query: '{query.query}' from user {query.from_user.id}")
-
         # Check if database is initialized
         if not hasattr(client, 'db') or client.db is None:
             logger.error("Database not initialized")
@@ -126,7 +117,6 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                 ],
                 cache_time=0
             )
-
         # Get chat type using custom peer type logic
         chat_id = getattr(query, 'chat', None)
         if chat_id:
@@ -144,7 +134,6 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                     [create_unauthorized_result()],
                     cache_time=0
                 )
-
         # Check force subscribe
         if not await check_user_in_channel(client, query.from_user.id):
             logger.debug(f"User {query.from_user.id} not subscribed to force sub channel")
@@ -152,7 +141,6 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                 [await create_force_sub_result(client)],
                 cache_time=0
             )
-
         # Check query length
         search_text = query.query.strip()
         if len(search_text) < Config.MIN_SEARCH_LENGTH:
@@ -161,12 +149,10 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                 [create_min_length_result()],
                 cache_time=0
             )
-
         # Search files
         logger.debug(f"Searching for: {search_text}")
         files = await search_files(client, search_text, db=client.db)
         results = []
-
         file_cache = FileCache(client.db)
         
         for file in files:
@@ -224,7 +210,6 @@ async def handle_inline_query(client: Client, query: InlineQuery):
             except Exception as e:
                 logger.error(f"Error processing file result: {e}")
                 continue
-
         if not results:
             logger.debug("No results found")
             results.append(
@@ -238,21 +223,18 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                     thumb_url=Config.NO_RESULTS_THUMB_URL if hasattr(Config, 'NO_RESULTS_THUMB_URL') else None
                 )
             )
-
         # Update user's search count
         try:
             user_db = User(client.db)
             await user_db.update_user_stats(query.from_user.id, search=True)
         except Exception as e:
             logger.error(f"Error updating user stats: {e}")
-
         logger.debug(f"Returning {len(results)} results")
         await query.answer(
             results[:Config.MAX_RESULTS],
             cache_time=300,
             is_personal=True
         )
-
     except Exception as e:
         logger.error(f"Error in inline query: {e}")
         await query.answer(
